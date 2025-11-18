@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Висящий Кубик — строгий Game Over при падении любого кубика на траву</title>
+    <style>
+        body { height: 100vh; margin: 0; display: flex; justify-content: center; align-items: center; background: #222 }
+        #gameContainer { position: relative; width: 800px; height: 600px; border: 2px solid #444;
+            background: linear-gradient(to bottom,#87CEEB,#E0F7FA);}
+        #canvas { position: absolute; top:0; left:0;}
+        #controls { position: absolute; bottom: 20px; left: 0; width: 100%; display: flex; justify-content: center;}
+        button { padding:10px 20px; font-size:18px; background:#4CAF50;color:#fff; border:none; border-radius:5px; cursor:pointer;}
+        button:hover { background:#45a049; }
+        #scoreDisplay { position: absolute; top: 20px; left: 20px; font-size: 24px; color:#333; background: rgba(255,255,255,0.7); padding: 10px; border-radius: 5px;}
+        #gameOver { position:absolute; top:0; left:0; width:100%;height:100%;  background: rgba(0,0,0,0.7); display:flex;flex-direction:column;justify-content:center;align-items:center;color:white;font-size:36px;z-index:10;opacity:0;pointer-events:none;transition:opacity 0.6s;}
+        #gameOver.show { opacity:1; pointer-events:all;}
+        #restartButton { margin-top:20px; padding:10px 20px; font-size:20px; background: #f44336; color:white; border:none; border-radius:5px; cursor:pointer;}
+    </style>
+</head>
+<body>
+<div id="gameContainer">
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <div id="scoreDisplay">Счет: <span id="score">0</span></div>
+    <div id="controls">
+        <button id="dropButton">Сбросить кубик!</button>
+    </div>
+    <div id="gameOver">
+        <div>Игра окончена!</div>
+        <div>Финальный счет: <span id="finalScore">0</span></div>
+        <button id="restartButton">Играть снова</button>
+    </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.18.0/matter.min.js"></script>
+<script>
+    const canvas = document.getElementById('canvas');
+    const dropButton = document.getElementById('dropButton');
+    const scoreDisplay = document.getElementById('score');
+    const finalScoreDisplay = document.getElementById('finalScore');
+    const gameOverScreen = document.getElementById('gameOver');
+    const restartButton = document.getElementById('restartButton');
+
+    const Engine = Matter.Engine,
+          Render = Matter.Render,
+          Runner = Matter.Runner,
+          Bodies = Matter.Bodies,
+          World = Matter.World,
+          Constraint = Matter.Constraint,
+          Events = Matter.Events,
+          Body = Matter.Body,
+          SAT = Matter.SAT;
+
+    const engine = Engine.create();
+    engine.world.gravity.y = 0.85;
+    const render = Render.create({
+        canvas: canvas,
+        engine: engine,
+        options: { 
+            width: 800, 
+            height: 600, 
+            wireframes: false, // Отключаем проволочные каркасы для тел
+            background: 'transparent' 
+        }
+    });
+    const runner = Runner.create();
+
+    let score = 0;
+    let blocks = [];
+    let currentBlock = null;
+    let pendulum = null; // Будем хранить ссылку на текущую нить
+    let isSwinging = false;
+    let gameActive = true;
+    let swingingAngle = 0;
+    let swingingDir = 1;
+    const anchor = { x: 400, y: 30 };
+    const cubeSize = 50;
+    const groundPlatWidth = cubeSize * 2;
+    const groundPlatX = anchor.x;
+    const groundPlatY = 540;
+    const grassY = 590;
+    const platform = Bodies.rectangle(groundPlatX, groundPlatY, groundPlatWidth, 20, { isStatic: true, render: { fillStyle: '#8B4513' } });
+    const grass = Bodies.rectangle(400, grassY, 800, 20, { isStatic: true, render: { fillStyle: '#2ecc40' } });
+
+    World.add(engine.world, [platform, grass]);
+
+    function randomColor() {
+        return '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
+    }
+
+    function createSwingingBlock() {
+        if (!gameActive) return;
+        if (currentBlock) World.remove(engine.world, currentBlock);
+        if (pendulum) {
+            World.remove(engine.world, pendulum); // Удаляем старую нить
+            pendulum = null;
+        }
+        currentBlock = Bodies.rectangle(anchor.x, 100, cubeSize, cubeSize, {
+            render: { fillStyle: randomColor() }
+        });
+        
+        // Создаем новую нить (constraint) с прямыми линиями
+        pendulum = Constraint.create({
+            pointA: anchor,
+            bodyB: currentBlock,
+            stiffness: 1, // Максимальная жесткость — нить не гнется
+            damping: 0.05,
+            length: 150,
+            render: {
+                type: 'line',           // Явно указываем, что это прямая линия
+                strokeStyle: '#ffffff', // Цвет белый
+                lineWidth: 2,           // Толщина линии
+                visible: true           // Показывать
+            }
+        });
+        
+        World.add(engine.world, [currentBlock, pendulum]);
+        isSwinging = true;
+        swingingAngle = -Math.PI / 8 + Math.random() * 0.05; // Уменьшаем начальный угол
+        swingingDir = 1;
+    }
+    createSwingingBlock();
+
+    const maxAngle = Math.PI / 8; // Окончательно уменьшаем амплитуду до ~22.5 градусов
+    const pendulumRadius = 170;
+    const pendulumBaseSpeed = 0.0065;
+    let lastPendulumSpeed = 0;
+    function animatePendulum() {
+        if (isSwinging && pendulum && currentBlock) {
+            let speed = pendulumBaseSpeed * Math.cos(swingingAngle);
+            swingingAngle += swingingDir * speed;
+
+            // Плавное изменение направления — вместо резкого "if"
+            if (swingingAngle > maxAngle) {
+                swingingAngle = maxAngle;
+                swingingDir = -1;
+            } else if (swingingAngle < -maxAngle) {
+                swingingAngle = -maxAngle;
+                swingingDir = 1;
+            }
+
+            const x = anchor.x + pendulumRadius * Math.sin(swingingAngle);
+            const y = anchor.y + pendulumRadius * Math.cos(swingingAngle);
+
+            Matter.Body.setPosition(currentBlock, { x: x, y: y });
+            Matter.Body.setVelocity(currentBlock, { x: 0, y: 0 });
+            Matter.Body.setAngle(currentBlock, 0);
+
+            lastPendulumSpeed = pendulumBaseSpeed * Math.cos(swingingAngle) * swingingDir * pendulumRadius * 0.85;
+        }
+        requestAnimationFrame(animatePendulum);
+    }
+    animatePendulum();
+
+    dropButton.addEventListener('click', dropBlock);
+    document.addEventListener('keydown', function(e) {
+        if (e.code === "Space" && gameActive && isSwinging && currentBlock) dropBlock();
+    });
+
+    function dropBlock() {
+        if (!isSwinging || !currentBlock || !gameActive) return;
+        World.remove(engine.world, pendulum);
+        pendulum = null;
+        isSwinging = false;
+        Body.setVelocity(currentBlock, { x: lastPendulumSpeed, y: 0 });
+    }
+
+    // Добавляем блоки при касании платформы/башни
+    Events.on(engine, 'collisionStart', function(event) {
+        if (!currentBlock || isSwinging || !gameActive) return;
+        for (let pair of event.pairs) {
+            if (
+                (pair.bodyA === currentBlock && (pair.bodyB === platform || blocks.includes(pair.bodyB))) ||
+                (pair.bodyB === currentBlock && (pair.bodyA === platform || blocks.includes(pair.bodyA)))
+            ) {
+                if (!blocks.includes(currentBlock)) {
+                    blocks.push(currentBlock);
+                    score++;
+                    scoreDisplay.textContent = score;
+                }
+                setTimeout(createSwingingBlock, 350);
+                currentBlock = null;
+                return;
+            }
+        }
+    });
+
+    // Проверка: если хоть один кубик касается травы — Game Over!
+    Events.on(engine, 'collisionStart', function(event) {
+        if (!gameActive) return;
+
+        for (let pair of event.pairs) {
+            if (pair.bodyA === grass || pair.bodyB === grass) {
+                let otherBody = (pair.bodyA === grass) ? pair.bodyB : pair.bodyA;
+                if (otherBody === currentBlock || blocks.includes(otherBody)) {
+                    endGame();
+                    return;
+                }
+            }
+        }
+    });
+
+    function endGame() {
+        gameActive = false;
+        finalScoreDisplay.textContent = scoreDisplay.textContent;
+        gameOverScreen.classList.add('show');
+    }
+    restartButton.addEventListener('click', function() {
+        // Удаляем все НЕплатформенные объекты кроме земли и платформы
+        Matter.Composite.allBodies(engine.world).forEach(b => {
+            if (b !== platform && b !== grass) World.remove(engine.world, b);
+        });
+        
+        // Удаляем старую нить (constraint)
+        if (pendulum) {
+            World.remove(engine.world, pendulum);
+            pendulum = null;
+        }
+        
+        score = 0; blocks = [];
+        currentBlock = null; isSwinging = false; gameActive = true;
+        scoreDisplay.textContent = score;
+        gameOverScreen.classList.remove('show');
+        createSwingingBlock(); // Создаем новую нить и кубик
+    });
+
+    Render.run(render);
+    Runner.run(runner, engine);
+</script>
+</body>
+</html>
